@@ -18,6 +18,9 @@
 
 #include "idl_gen_java.h"
 
+#include <iostream>
+#include <regex>
+
 #include "flatbuffers/code_generators.h"
 #include "flatbuffers/flatbuffers.h"
 #include "flatbuffers/idl.h"
@@ -28,6 +31,27 @@ namespace flatbuffers {
 namespace java {
 
 namespace {
+
+std::string FormatPrint(std::string s,
+                        const std::map<std::string, std::string>& vars,
+                        char escape_char_) {
+  // std::string s = string_template;
+  // Replace any occurrences of strings in "vars" that are surrounded
+  // by the escape character by what they're mapped to.
+  size_t pos;
+  while ((pos = s.find(escape_char_)) != std::string::npos) {
+    // Found an escape char, must also find the closing one.
+    size_t pos2 = s.find(escape_char_, pos + 1);
+    // If placeholder not closed, ignore.
+    if (pos2 == std::string::npos) break;
+    auto it = vars.find(s.substr(pos + 1, pos2 - pos - 1));
+    // If unknown placeholder, ignore.
+    if (it == vars.end()) break;
+    // Subtitute placeholder.
+    s.replace(pos, pos2 - pos + 1, it->second);
+  }
+  return s;
+}
 
 static Namer::Config JavaDefaultConfig() {
   return {
@@ -56,16 +80,16 @@ static Namer::Config JavaDefaultConfig() {
 
 static std::set<std::string> JavaKeywords() {
   return {
-      "abstract", "assert",   "boolean",    "break",     "byte",
-      "case",     "catch",    "char",       "class",     "const",
-      "continue", "default",  "do",         "double",    "else",
-      "enum",     "extends",  "final",      "finally",   "float",
-      "for",      "goto",     "if",         "implements","import",
-      "instanceof","int",     "interface",  "long",      "native",
-      "new",      "notify",   "package",    "private",   "protected",
-      "public",   "return",   "short",      "static",    "strictfp",
-      "super",    "switch",   "synchronized","this",     "throw",
-      "throws",   "transient","try",        "void",      "volatile",
+      "abstract",   "assert",    "boolean",      "break",      "byte",
+      "case",       "catch",     "char",         "class",      "const",
+      "continue",   "default",   "do",           "double",     "else",
+      "enum",       "extends",   "final",        "finally",    "float",
+      "for",        "goto",      "if",           "implements", "import",
+      "instanceof", "int",       "interface",    "long",       "native",
+      "new",        "notify",    "package",      "private",    "protected",
+      "public",     "return",    "short",        "static",     "strictfp",
+      "super",      "switch",    "synchronized", "this",       "throw",
+      "throws",     "transient", "try",          "void",       "volatile",
       "while",
   };
 }
@@ -207,7 +231,9 @@ class JavaGenerator : public BaseGenerator {
           "import com.google.flatbuffers.ShortVector;\n"
           "import com.google.flatbuffers.StringVector;\n"
           "import com.google.flatbuffers.Struct;\n"
+          "import com.google.flatbuffers.TableBuilder;\n"
           "import com.google.flatbuffers.UnionVector;\n"
+          "import com.google.flatbuffers.Allocator;\n"
           "import java.nio.ByteBuffer;\n"
           "import java.nio.ByteOrder;\n";
       if (parser_.opts.gen_nullable) {
@@ -485,6 +511,8 @@ class JavaGenerator : public BaseGenerator {
       code += "]; }\n";
     }
 
+    code += GenUnionBuilder(enum_def);
+
     // Close the class
     code += "}\n\n";
   }
@@ -693,6 +721,325 @@ class JavaGenerator : public BaseGenerator {
     return key_getter;
   }
 
+  std::string GenStructAlloctar(StructDef& struct_def) const {
+    const auto struct_class = namer_.Type(struct_def);
+
+    std::string type_name_args = "";
+    std::string name_args = "";
+    GenStructArgs(struct_def, type_name_args, "");
+
+    std::regex re("\\s+(\\S+)(?:,|$)");
+    std::smatch match;
+    std::string::const_iterator searchStart(type_name_args.cbegin());
+    bool is_first = true;
+    while (std::regex_search(searchStart, type_name_args.cend(), match, re)) {
+      if (!is_first) {
+        name_args += ", ";
+      }
+      is_first = false;
+      // match[1] is the captured token
+      name_args += match[1];
+
+      // Move search start
+      searchStart = match.suffix().first;
+    }
+
+    std::map<std::string, std::string> vars = {
+        {"struct_class", struct_class},
+        {"type_name_args", type_name_args.substr(1)},
+        {"name_args", name_args}};
+
+    return FormatPrint(R"(
+  public static Allocator<$struct_class$> create$struct_class$($type_name_args$) {
+    return builder -> $struct_class$.create$struct_class$(builder, $name_args$);
+  }
+
+)",
+                       vars, '$');
+  }
+
+  std::string GenUnionBuilder(EnumDef& enum_def) const {
+    if(!enum_def.is_union){
+      return "";
+    }
+    std::ostringstream oss;
+    oss << R"(
+  public static class V1Builder{
+    )";
+
+
+    for (auto it = enum_def.Vals().begin(); it != enum_def.Vals().end(); ++it) {
+      auto& ev = **it;
+
+      const std::string type_name_dest = GenTypeNameDest(ev.union_type);
+
+      std::map<std::string, std::string> vars = {
+          {"field", ev.name}
+          ,{"type_name_dest", type_name_dest}
+        };
+
+      if(IsStruct(ev.union_type) || IsTable(ev.union_type)){
+        oss << FormatPrint(R"(
+    public static com.google.flatbuffers.Allocator.UnionAllocator<$type_name_dest$> $field$(com.google.flatbuffers.Allocator<$type_name_dest$> reqAlloc) {
+      return com.google.flatbuffers.Allocator.UnionAllocator.of($field$, reqAlloc);
+    }
+          )", vars, '$');
+      }else if(IsString(ev.union_type)){
+        oss << FormatPrint(R"(
+    public static com.google.flatbuffers.Allocator.UnionAllocator $field$(String str) {
+      return com.google.flatbuffers.Allocator.UnionAllocator.ofString($field$, str);
+    }
+          )", vars, '$');
+      }else{
+      }
+    }
+
+    oss << R"(
+  }
+    )"<<std::endl;
+
+    return oss.str();
+  }
+
+  std::string GenBuilderMethod(StructDef& struct_def) const {
+    if (struct_def.fixed) {
+      return GenStructAlloctar(struct_def);
+    }
+    return GenTableBuilder(struct_def);
+  }
+
+  std::string GenTableBuilder(StructDef& struct_def) const {
+    const auto struct_class = namer_.Type(struct_def);
+
+    std::ostringstream oss;
+    std::map<std::string, std::string> vars = {
+        {"table_class_name", struct_class}};
+
+    oss << "// --- Builder Start --- \n\n";
+    oss << FormatPrint(R"(
+  public static class V1Builder extends TableBuilder.AbstractTableBuilder<$table_class_name$, V1Builder> {
+    public $table_class_name$ asObject($table_class_name$ obj) {
+        if (null == obj) {
+            obj = new $table_class_name$();
+        }
+        return $table_class_name$.getRootAs$table_class_name$(toBuffer(), obj);
+    }
+
+    public int allocate(FlatBufferBuilder builder) {
+        allocates(builder);
+        $table_class_name$.start$table_class_name$(builder);
+        compose(builder);
+        return $table_class_name$.end$table_class_name$(builder);
+    }
+)",
+                       vars, '$')
+        << std::endl;
+
+    for (auto it = struct_def.fields.vec.begin();
+         it != struct_def.fields.vec.end(); ++it) {
+      auto& field = **it;
+      if (field.deprecated) continue;
+      const std::string type_name = GenTypeGet(field.value.type);
+      const std::string type_name_dest = GenTypeNameDest(field.value.type);
+      const std::string dest_mask = DestinationMask(field.value.type, true);
+      const std::string dest_cast = DestinationCast(field.value.type);
+      const std::string src_cast = SourceCast(field.value.type);
+      // union type field skip generate builder method
+
+      if (IsUnionType(field.value.type)) {
+        continue;
+      }
+      // union array type field skip generate builder method
+      if (IsVector(field.value.type) && nullptr != field.value.type.enum_def &&
+          field.value.type.enum_def->is_union &&
+          IsInteger(field.value.type.element)) {
+        continue;
+      }
+      // field method declare
+      bool is_complex = field.value.type.base_type == BASE_TYPE_STRUCT ||
+                        (IsVector(field.value.type) &&
+                         field.value.type.element == BASE_TYPE_STRUCT);
+
+      bool is_char_or_unchar = field.value.type.base_type == BASE_TYPE_CHAR ||
+                               field.value.type.base_type == BASE_TYPE_UCHAR ||
+                               (IsVector(field.value.type) &&
+                                field.value.type.element == BASE_TYPE_CHAR) ||
+                               (IsVector(field.value.type) &&
+                                field.value.type.element == BASE_TYPE_UCHAR);
+
+      std::string type_of_build_field = "";
+      std::string arg_name_of_build_field = "value";
+      std::string array_type_postfix = "";
+      std::string array_name_postfix = "";
+
+      if (IsVector(field.value.type)) {
+        array_type_postfix = "...";
+        array_name_postfix = "s";
+      }
+
+      if (IsUnion(field.value.type)) {
+        type_of_build_field = "UnionAllocator";
+        /* code */
+      } else if (is_complex) {
+        type_of_build_field =
+            "Allocator<" + type_name_dest + ">";
+      } else if (is_char_or_unchar){
+        type_of_build_field = "byte";
+      } else {
+        type_of_build_field = type_name_dest;
+      }
+
+      // oss << "    public V1Builder " << namer_.Field(field) << '('
+      //     << (is_complex ? "Allocator<" : "") <<
+      //     (is_char_or_unchar?"byte":type_name_dest)
+      //     << (is_complex ? ">" : "")
+      //     << (IsVector(field.value.type) ? "..." : "") << " "
+      //     << (IsVector(field.value.type) ? "values" : "value") << "){"
+      //     << std::endl;
+
+      std::map<std::string, std::string> vars = {
+          {"type_of_build_filed", type_of_build_field},
+          {"arg_name_of_build_filed", arg_name_of_build_field},
+          {"array_type_postfix", array_type_postfix},
+          {"array_name_postfix", array_name_postfix},
+          {"field_name", namer_.Field(field)},
+          {"createMethodName", namer_.Method("create", field)},
+          {"addMethodName", namer_.Method("add", field)},
+          {"startMethodName", namer_.Method("start", field)},
+          {"struct_class", struct_class}};
+
+      bool is_union_or_union_in_vector = false;
+      if (IsUnion(field.value.type) ||
+          (IsVector(field.value.type) && nullptr != field.value.type.enum_def &&
+           field.value.type.enum_def->is_union &&
+           !IsInteger(field.value.type.element))) {
+        is_union_or_union_in_vector = true;
+        auto unionTypeField = struct_def.fields.Lookup(field.name + "_type");
+
+        vars.insert(
+            {{"type_field_name", namer_.Field(*unionTypeField)},
+             {"type_createMethodName",
+              namer_.Method("create", *unionTypeField)},
+             {"type_addMethodName", namer_.Method("add", *unionTypeField)},
+             {"type_startMethodName",
+              namer_.Method("start", *unionTypeField)}});
+      }
+
+      oss << FormatPrint(R"(
+    public V1Builder $field_name$($type_of_build_filed$$array_type_postfix$ $arg_name_of_build_filed$$array_name_postfix$) {
+      )",
+                         vars, '$');
+
+      // handle all vector
+      if (IsVector(field.value.type)) {
+        if (field.value.type.element == BASE_TYPE_STRING) {
+          oss << FormatPrint(R"(
+      field("$field_name$",
+                Allocator.ofTableVector($struct_class$::$createMethodName$Vector,
+                        java.util.Arrays.stream(values)
+                                .map(val -> (Allocator) (FlatBufferBuilder builder) -> builder.createString(val))
+                                .collect(java.util.stream.Collectors.toList()).toArray(new Allocator[]{})
+                )
+                , $struct_class$::$addMethodName$);                
+)",
+                             vars, '$');
+          // is struct
+        } else if (field.value.type.element == BASE_TYPE_STRUCT &&
+                   field.value.type.struct_def->fixed) {
+          oss << FormatPrint(R"(
+      field("$field_name$",
+        Allocator.ofStructVector($struct_class$::$startMethodName$Vector, values)
+        , $struct_class$::$addMethodName$);
+        )",
+                             vars, '$');
+          // is table
+        } else if (field.value.type.element == BASE_TYPE_STRUCT &&
+                   !field.value.type.struct_def->fixed) {
+          oss << FormatPrint(
+              R"(
+      field("$field_name$",
+        Allocator.ofTableVector($struct_class$::$createMethodName$Vector, values)
+        , $struct_class$::$addMethodName$);        
+)",
+              vars, '$');
+          // union in vector
+        } else if (is_union_or_union_in_vector) {
+          oss << FormatPrint(R"(
+      byte[] types = new byte[values.length];
+      for (int i = 0; i < values.length; i++) {
+        types[i] = values[i].getType();
+      }
+      field("$type_field_name$",
+        builder -> $struct_class$.$type_createMethodName$Vector(builder, types),
+        $struct_class$::$type_addMethodName$
+      );
+      field("$field_name$",
+        Allocator.ofTableVector($struct_class$::$createMethodName$Vector, values)
+        , $struct_class$::$addMethodName$
+      );        )",
+                             vars, '$');
+        } else {
+          oss << FormatPrint(
+                     R"(
+      field("$field_name$",
+        builder -> $struct_class$.$createMethodName$Vector(builder, values)
+        , $struct_class$::$addMethodName$);
+)",
+                     vars, '$')
+              << std::endl;
+        }
+        // end of handle vector
+      } else if (is_union_or_union_in_vector) {
+        oss << FormatPrint(R"(
+      field("$field_name$",
+        value,
+        (builder, _s) -> {
+          $struct_class$.$type_addMethodName$(builder, value.getType());
+          $struct_class$.$addMethodName$(builder, _s);
+        }
+      );
+        )",
+                           vars, '$');
+      } else if (IsTable(field.value.type)) {
+        oss << FormatPrint(R"(
+      field("$field_name$", value, $struct_class$::$addMethodName$);)",
+                           vars, '$')
+            << std::endl;
+      } else if (IsStruct(field.value.type)) {
+        oss << FormatPrint(R"(
+      field("$field_name$", null,
+        (builder, idx) -> $struct_class$.$addMethodName$(builder, value.allocate(builder)));)",
+                           vars, '$')
+            << std::endl;
+      } else if (IsString(field.value.type)) {
+        oss << FormatPrint(R"(        
+      field("$field_name$", (builder) -> builder.createString(value),
+        $struct_class$::$addMethodName$);)",
+                           vars, '$')
+            << std::endl;
+      } else {
+        oss << FormatPrint(R"(        
+      field("$field_name$", null,
+        (builder, _s) -> $struct_class$.$addMethodName$(builder, value));)",
+                           vars, '$')
+            << std::endl;
+      }
+      oss << R"(
+      return this;
+    };
+)";
+    }
+
+    oss << R"(  }
+
+  public static V1Builder newV1Builder() {
+    return new V1Builder();
+  }
+)" << std::endl;
+    oss << "// --- Builder End --- \n\n";
+    return oss.str();
+  }
+
   void GenStruct(StructDef& struct_def, std::string& code,
                  const IDLOptions& opts) const {
     if (struct_def.generated) return;
@@ -719,6 +1066,8 @@ class JavaGenerator : public BaseGenerator {
     code += " extends ";
     code += struct_def.fixed ? "Struct" : "com.google.flatbuffers.Table";
     code += " {\n";
+
+    code += this->GenBuilderMethod(struct_def);
 
     if (!struct_def.fixed) {
       // Generate version check method.
@@ -1468,7 +1817,8 @@ class JavaGenerator : public BaseGenerator {
             " " + variable_name + "Type = " + field_name + "Type(" +
             type_params + ");\n";
     code += indent + variable_name + ".setType(" + variable_name + "Type);\n";
-    code += indent + "com.google.flatbuffers.Table " + variable_name + "Value;\n";
+    code +=
+        indent + "com.google.flatbuffers.Table " + variable_name + "Value;\n";
     code += indent + "switch (" + variable_name + "Type) {\n";
     for (auto eit = enum_def.Vals().begin(); eit != enum_def.Vals().end();
          ++eit) {

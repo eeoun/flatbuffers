@@ -1,0 +1,80 @@
+namespace test.java_builder;
+
+table HelloRequest {
+  name:string;
+}
+
+struct Vec3 {
+  x:float;   // 4 bytes
+  y:float;   // 4 bytes
+  z:float;   // 4 bytes
+
+  values: [float:3];
+}
+
+union Test_Union {
+  Vec3,
+  req:HelloRequest,
+  name:string,
+  name1:string
+}
+
+/// enum Color : byte { Red = 1, Green, Blue }
+
+table HelloResponse {
+
+  /// color: Color;
+  single_union:Test_Union;
+  array_union:[Test_Union];
+
+  array_table:[HelloRequest];
+  single_table:HelloRequest;
+
+  single_byte:byte;
+  array_byte:[byte];
+
+  single_bool:bool;
+  array_bool:[bool];
+
+  single_ubyte:ubyte;
+  array_ubyte:[ubyte];
+
+  single_short:short;
+  array_short:[short];
+
+  single_ushort:ushort;
+  array_ushort:[ushort];
+
+  single_uint:uint;
+  array_uint:[uint];
+
+  single_float:float;
+  array_float:[float];
+
+  single_long:long;
+  array_long:[long];
+
+  single_ulong:ulong;
+  array_ulong:[ulong];
+
+  single_double:double;
+  array_double:[double];
+
+  single_int16:int16;
+  array_int16:[int16];
+
+  single_uint16:uint16;
+  array_uint16:[uint16];
+
+  single_uint8:uint8;
+  array_uint8:[uint8];
+
+  single_struct:Vec3;
+  array_struct:[Vec3];
+
+  single_int:int;
+  array_int:[int];
+
+  single_string:string;
+  array_string:[string];
+}

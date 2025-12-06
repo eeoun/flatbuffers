@@ -246,6 +246,16 @@ flatc(
 )
 
 flatc(
+    JAVA_OPTS,
+    schema="java_builder.fbs"
+)
+
+flatc(
+    JAVA_OPTS + ["--java-package-prefix", "com.google.flatbuffers"],
+    schema="java_builder.fbs",
+)
+
+flatc(
     BASE_OPTS + CPP_OPTS + CS_OPTS + JAVA_OPTS + KOTLIN_OPTS + PHP_OPTS,
     prefix="union_vector",
     schema="union_vector/union_vector.fbs",
